@@ -48,6 +48,13 @@
     .status { text-align: center; font-size: 13px; color: #94a3b8; margin-top: 10px; min-height: 18px; }
     .nombre { text-align: center; font-size: 17px; font-weight: 700; margin-bottom: 2px; }
     .id { text-align: center; font-size: 12px; color: #64748b; margin-bottom: 18px; }
+    .pasos { display: flex; justify-content: center; align-items: center; gap: 6px; margin-bottom: 20px; }
+    .paso { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: .45; }
+    .paso.completado, .paso.activo { opacity: 1; }
+    .paso-punto { width: 12px; height: 12px; border-radius: 50%; background: #475569; }
+    .paso.completado .paso-punto { background: #22c55e; }
+    .paso.activo .paso-punto { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251,191,36,.25); }
+    .paso-txt { font-size: 10px; color: #94a3b8; }
     .hist { margin-top: 18px; border-top: 1px solid #334155; padding-top: 14px; }
     .hist-item { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; color: #cbd5e1; }
     .hidden { display: none !important; }
@@ -120,10 +127,15 @@
     <div class="id" id="idUsuario"></div>
 
     <div id="vistaBotones">
-      <button class="btn-entrada" id="btnEntrada" onclick="pedirPin('Entrada')">Marcar entrada</button>
-      <button class="btn-almuerzo-out" id="btnSalidaAlmuerzo" onclick="pedirPin('Salida almuerzo')">Salida a almorzar</button>
-      <button class="btn-almuerzo-in" id="btnVueltaAlmuerzo" onclick="pedirPin('Vuelta almuerzo')">Vuelta de almorzar</button>
-      <button class="btn-salida" id="btnSalida" onclick="pedirPin('Salida')">Marcar salida</button>
+      <div class="pasos" id="pasosDia">
+        <div class="paso" id="pasoEntrada"><span class="paso-punto"></span><span class="paso-txt">Entrada</span></div>
+        <div class="paso" id="pasoAlmuerzo"><span class="paso-punto"></span><span class="paso-txt">Almuerzo</span></div>
+        <div class="paso" id="pasoSalida"><span class="paso-punto"></span><span class="paso-txt">Salida</span></div>
+      </div>
+      <button class="btn-entrada" id="btnEntrada" onclick="pedirPin('Entrada')">🟢 Marcar entrada</button>
+      <button class="btn-almuerzo-out" id="btnSalidaAlmuerzo" onclick="pedirPin('Salida almuerzo')">🍽️ Salida a almorzar</button>
+      <button class="btn-almuerzo-in" id="btnVueltaAlmuerzo" onclick="pedirPin('Vuelta almuerzo')">↩️ Vuelta de almorzar</button>
+      <button class="btn-salida" id="btnSalida" onclick="pedirPin('Salida')">🔴 Marcar salida</button>
     </div>
 
     <div id="vistaPin" class="hidden">
@@ -172,6 +184,7 @@
     </div>
 
     <div class="status" id="statusPrincipal"></div>
+    <div class="status" id="indicadorCola" style="color:#f59e0b;"></div>
     <div class="hist" id="historial"></div>
     <div class="link-reset" onclick="resetear()">No soy yo / cambiar usuario</div>
   </div>
@@ -197,15 +210,62 @@
     })();
 
     // ---- Llamadas al backend (Google Apps Script) ----
+    // networkError = true en el error significa "no hay conexión / no llegó a Google",
+    // distinto de un rechazo real del servidor (PIN incorrecto, etc). Sirve para decidir
+    // si conviene reintentar más tarde o mostrar el error ya mismo.
     function llamarApi(action, params) {
       const url = API_URL + '?action=' + encodeURIComponent(action) + '&params=' + encodeURIComponent(JSON.stringify(params || []));
       return fetch(url)
+        .catch(function () {
+          const err = new Error('Sin conexión a internet.');
+          err.networkError = true;
+          throw err;
+        })
         .then(function (r) { return r.json(); })
         .then(function (res) {
           if (!res.ok) throw new Error(res.error || 'Error desconocido');
           return res.data;
         });
     }
+
+    // ---- Cola de fichajes pendientes (por si falla la conexión al marcar) ----
+    const COLA_KEY = 'fichero_cola_pendiente';
+
+    function encolarFichaje(params) {
+      const cola = JSON.parse(localStorage.getItem(COLA_KEY) || '[]');
+      cola.push({ params: params, intentos: 0 });
+      localStorage.setItem(COLA_KEY, JSON.stringify(cola));
+      actualizarIndicadorCola();
+    }
+
+    function actualizarIndicadorCola() {
+      const cola = JSON.parse(localStorage.getItem(COLA_KEY) || '[]');
+      const el = document.getElementById('indicadorCola');
+      if (!el) return;
+      el.textContent = cola.length ? '⏳ ' + cola.length + ' fichaje(s) pendiente(s) de enviar (sin conexión)' : '';
+    }
+
+    async function procesarColaPendiente() {
+      const cola = JSON.parse(localStorage.getItem(COLA_KEY) || '[]');
+      if (!cola.length) return;
+      const restante = [];
+      for (const item of cola) {
+        try {
+          const url = API_URL + '?action=marcarFichaje&params=' + encodeURIComponent(JSON.stringify(item.params));
+          const r = await fetch(url);
+          await r.json(); // si responde, ya sea éxito o rechazo, se saca de la cola: no es problema de red.
+        } catch (e) {
+          item.intentos++;
+          if (item.intentos < 50) restante.push(item);
+        }
+      }
+      localStorage.setItem(COLA_KEY, JSON.stringify(restante));
+      actualizarIndicadorCola();
+      if (restante.length < cola.length) actualizarHistorial(localStorage.getItem(TOKEN_KEY));
+    }
+
+    window.addEventListener('online', procesarColaPendiente);
+    setInterval(procesarColaPendiente, 30000);
 
     document.addEventListener('DOMContentLoaded', init);
 
@@ -216,6 +276,8 @@
       } else {
         mostrar('registro');
       }
+      actualizarIndicadorCola();
+      procesarColaPendiente();
     }
 
     function mostrar(id) {
@@ -262,17 +324,53 @@
       return Array.from(resultado.descriptor);
     }
 
-    async function prepararCamara(videoEl, statusElId) {
+    async function prepararCamara(videoEl, statusElId, autoCallback) {
       const statusEl = document.getElementById(statusElId);
       try {
         statusEl.textContent = modelosListos ? '' : 'Cargando reconocimiento facial (puede tardar la primera vez)...';
         await modelosPromise;
         statusEl.textContent = 'Pidiendo permiso de cámara...';
         await iniciarCamara(videoEl);
-        statusEl.textContent = '';
+        statusEl.textContent = 'Centrá tu cara en el óvalo...';
+        if (autoCallback) iniciarAutoEscaneo(videoEl, statusEl, autoCallback);
       } catch (err) {
         statusEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
       }
+    }
+
+    // Escanea la cámara sola cada 350ms; cuando detecta una cara de forma estable
+    // (3 lecturas seguidas, para evitar falsos positivos por un parpadeo del video),
+    // dispara automáticamente el siguiente paso sin que haga falta tocar un botón.
+    // El botón manual de cada pantalla sigue funcionando como respaldo por si esto tarda.
+    let escaneoActivo = null;
+
+    function iniciarAutoEscaneo(video, statusEl, callback) {
+      detenerAutoEscaneo();
+      let confirmaciones = 0;
+      let procesando = false;
+      escaneoActivo = setInterval(async function () {
+        if (procesando || !video.srcObject) return;
+        procesando = true;
+        try {
+          const resultado = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions());
+          if (resultado) {
+            confirmaciones++;
+            if (confirmaciones === 1) statusEl.textContent = 'Detectando...';
+            if (confirmaciones >= 3) {
+              detenerAutoEscaneo();
+              callback();
+              return;
+            }
+          } else {
+            confirmaciones = 0;
+          }
+        } catch (e) { /* frame sin cara válida, se ignora */ }
+        procesando = false;
+      }, 350);
+    }
+
+    function detenerAutoEscaneo() {
+      if (escaneoActivo) { clearInterval(escaneoActivo); escaneoActivo = null; }
     }
 
     // ---- Registro ----
@@ -301,10 +399,11 @@
 
       document.getElementById('registroDatos').classList.add('hidden');
       document.getElementById('registroRostro').classList.remove('hidden');
-      prepararCamara(document.getElementById('videoRegistro'), 'statusRostroRegistro');
+      prepararCamara(document.getElementById('videoRegistro'), 'statusRostroRegistro', capturarRostroRegistro);
     }
 
     function volverDatosRegistro() {
+      detenerAutoEscaneo();
       detenerCamara();
       document.getElementById('registroRostro').classList.add('hidden');
       document.getElementById('registroDatos').classList.remove('hidden');
@@ -314,16 +413,18 @@
     function irAVincular() {
       document.getElementById('registroDatos').classList.add('hidden');
       document.getElementById('vinculo').classList.remove('hidden');
-      prepararCamara(document.getElementById('videoVinculo'), 'statusVinculo');
+      prepararCamara(document.getElementById('videoVinculo'), 'statusVinculo', capturarVinculo);
     }
 
     function volverDesdeVinculo() {
+      detenerAutoEscaneo();
       detenerCamara();
       document.getElementById('vinculo').classList.add('hidden');
       document.getElementById('registroDatos').classList.remove('hidden');
     }
 
     async function capturarVinculo() {
+      detenerAutoEscaneo();
       document.getElementById('statusVinculo').textContent = 'Analizando...';
       const video = document.getElementById('videoVinculo');
       const descriptor = await capturarDescriptor(video);
@@ -344,6 +445,7 @@
     }
 
     async function capturarRostroRegistro() {
+      detenerAutoEscaneo();
       document.getElementById('statusRostroRegistro').textContent = 'Analizando...';
       const video = document.getElementById('videoRegistro');
       const descriptor = await capturarDescriptor(video);
@@ -384,10 +486,16 @@
         .then(function (tipos) {
           const cont = {};
           tipos.forEach(t => cont[t] = (cont[t] || 0) + 1);
+          const diaTerminado = !!cont['Salida'];
           document.getElementById('btnEntrada').disabled = !!cont['Entrada'];
-          document.getElementById('btnSalidaAlmuerzo').disabled = !cont['Entrada'] || !!cont['Salida almuerzo'];
-          document.getElementById('btnVueltaAlmuerzo').disabled = !cont['Salida almuerzo'] || !!cont['Vuelta almuerzo'];
-          document.getElementById('btnSalida').disabled = !cont['Entrada'] || !!cont['Salida'];
+          document.getElementById('btnSalidaAlmuerzo').disabled = !cont['Entrada'] || !!cont['Salida almuerzo'] || diaTerminado;
+          document.getElementById('btnVueltaAlmuerzo').disabled = !cont['Salida almuerzo'] || !!cont['Vuelta almuerzo'] || diaTerminado;
+          document.getElementById('btnSalida').disabled = !cont['Entrada'] || diaTerminado;
+
+          document.getElementById('pasoEntrada').className = 'paso' + (cont['Entrada'] ? ' completado' : ' activo');
+          document.getElementById('pasoAlmuerzo').className = 'paso' + (cont['Vuelta almuerzo'] ? ' completado' : (cont['Entrada'] && !diaTerminado ? ' activo' : ''));
+          document.getElementById('pasoSalida').className = 'paso' + (diaTerminado ? ' completado' : (cont['Entrada'] ? ' activo' : ''));
+
           const hist = document.getElementById('historial');
           if (tipos.length) {
             hist.innerHTML = '<div style="font-size:12px;color:#64748b;margin-bottom:6px;">Hoy marcaste:</div>' +
@@ -425,7 +533,7 @@
       pinPendiente = pin;
       document.getElementById('vistaPin').classList.add('hidden');
       document.getElementById('vistaRostroFichaje').classList.remove('hidden');
-      prepararCamara(document.getElementById('videoFichaje'), 'statusRostroFichaje');
+      prepararCamara(document.getElementById('videoFichaje'), 'statusRostroFichaje', capturarRostroFichaje);
     }
 
     // ---- Olvidé mi PIN ----
@@ -434,10 +542,11 @@
     function irARecuperarPin() {
       document.getElementById('vistaPin').classList.add('hidden');
       document.getElementById('vistaRecuperarRostro').classList.remove('hidden');
-      prepararCamara(document.getElementById('videoRecuperar'), 'statusRecuperarRostro');
+      prepararCamara(document.getElementById('videoRecuperar'), 'statusRecuperarRostro', capturarRecuperar);
     }
 
     function cancelarRecuperar() {
+      detenerAutoEscaneo();
       detenerCamara();
       descriptorRecuperado = null;
       tipoPendiente = null;
@@ -447,6 +556,7 @@
     }
 
     async function capturarRecuperar() {
+      detenerAutoEscaneo();
       document.getElementById('statusRecuperarRostro').textContent = 'Analizando...';
       const video = document.getElementById('videoRecuperar');
       const descriptor = await capturarDescriptor(video);
@@ -490,6 +600,7 @@
     }
 
     function cancelarRostroFichaje() {
+      detenerAutoEscaneo();
       detenerCamara();
       tipoPendiente = null;
       pinPendiente = null;
@@ -499,6 +610,7 @@
     }
 
     async function capturarRostroFichaje() {
+      detenerAutoEscaneo();
       document.getElementById('statusRostroFichaje').textContent = 'Analizando...';
       const video = document.getElementById('videoFichaje');
       const descriptor = await capturarDescriptor(video);
@@ -517,8 +629,9 @@
       const lat = ubicacion ? ubicacion.lat : null;
       const lon = ubicacion ? ubicacion.lon : null;
       const precision = ubicacion ? ubicacion.precision : null;
+      const params = [token, tipo, pin, descriptor, lat, lon, precision];
       document.getElementById('statusRostroFichaje').textContent = 'Guardando...';
-      llamarApi('marcarFichaje', [token, tipo, pin, descriptor, lat, lon, precision])
+      llamarApi('marcarFichaje', params)
         .then(function (res) {
           mostrarSaludo(res.mensaje);
           tipoPendiente = null;
@@ -526,6 +639,14 @@
           actualizarHistorial(token);
         })
         .catch(function (err) {
+          if (err.networkError) {
+            // Sin conexión: no perdemos el fichaje, lo guardamos para mandarlo solo apenas vuelva la señal.
+            encolarFichaje(params);
+            mostrarSaludo('Sin conexión ahora — tu ' + tipo.toLowerCase() + ' quedó guardada y se va a enviar sola apenas vuelva la señal.');
+            tipoPendiente = null;
+            pinPendiente = null;
+            return;
+          }
           document.getElementById('statusRostroFichaje').textContent = 'Error: ' + err.message;
         });
     }
