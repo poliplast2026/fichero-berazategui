@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: #1e293b;
+      border-radius: 16px;
+      padding: 28px 24px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; text-align: center; }
+    .sub { text-align: center; color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+    input[type=text], input[type=password] {
+      width: 100%; padding: 14px; font-size: 16px; border-radius: 10px;
+      border: 1px solid #334155; background: #0f172a; color: #f1f5f9; margin-bottom: 14px;
+      letter-spacing: 1px;
+    }
+    button {
+      width: 100%; padding: 16px; font-size: 16px; font-weight: 600; border: none;
+      border-radius: 10px; margin-bottom: 10px; cursor: pointer; transition: opacity .15s;
+    }
+    button:disabled { opacity: .35; cursor: not-allowed; }
+    .btn-entrada { background: #22c55e; color: #052e14; }
+    .btn-almuerzo-out { background: #f59e0b; color: #431a00; }
+    .btn-almuerzo-in { background: #38bdf8; color: #04283a; }
+    .btn-salida { background: #ef4444; color: #350707; }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-cancelar { background: #334155; color: #f1f5f9; }
+    .status { text-align: center; font-size: 13px; color: #94a3b8; margin-top: 10px; min-height: 18px; }
+    .nombre { text-align: center; font-size: 17px; font-weight: 700; margin-bottom: 2px; }
+    .id { text-align: center; font-size: 12px; color: #64748b; margin-bottom: 18px; }
+    .hist { margin-top: 18px; border-top: 1px solid #334155; padding-top: 14px; }
+    .hist-item { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; color: #cbd5e1; }
+    .hidden { display: none !important; }
+    .link-reset { display:block; text-align:center; margin-top:16px; font-size:12px; color:#64748b; text-decoration: underline; cursor:pointer; }
+    .consentimiento { display:flex; gap:8px; font-size:12px; color:#94a3b8; margin-bottom:14px; align-items:flex-start; line-height:1.4; }
+    .consentimiento input { width:auto; margin-top:2px; }
+    video {
+      width: 100%; border-radius: 12px; background: #000; margin-bottom: 14px;
+      transform: scaleX(-1); aspect-ratio: 3 / 4; object-fit: cover;
+    }
+    .saludo { text-align: center; font-size: 22px; font-weight: 700; padding: 40px 10px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+
+  <div class="card" id="registro">
+    <h1>Fichero Berazategui</h1>
+
+    <div id="registroDatos">
+      <div class="sub">Primera vez en este celular — registrate. El PIN y tu rostro te los va a pedir cada vez que fiches.</div>
+      <input type="text" id="nombreInput" placeholder="Nombre y apellido">
+      <input type="password" id="pinInput" placeholder="Elegí un PIN de 4 números" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <input type="password" id="pinConfirmInput" placeholder="Repetí el PIN" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <label class="consentimiento">
+        <input type="checkbox" id="consentimientoInput">
+        <span>Acepto que se capture mi rostro (solo se guardan datos matemáticos, nunca fotos) para verificar mi identidad al fichar.</span>
+      </label>
+      <button class="btn-primary" onclick="irACapturaRostro()">Continuar</button>
+      <div class="status" id="statusRegistro"></div>
+      <div class="link-reset" onclick="irAVincular()">Ya me registré antes, vincular este celular</div>
+    </div>
+
+    <div id="registroRostro" class="hidden">
+      <div class="sub">Encuadrá tu cara con buena luz y tocá "Capturar rostro".</div>
+      <video id="videoRegistro" autoplay playsinline muted></video>
+      <button class="btn-primary" onclick="capturarRostroRegistro()">Capturar rostro</button>
+      <button class="btn-cancelar" onclick="volverDatosRegistro()">Volver</button>
+      <div class="status" id="statusRostroRegistro"></div>
+    </div>
+
+    <div id="vinculo" class="hidden">
+      <div class="sub">Mirá a la cámara para reconocerte y vincular este celular a tu usuario existente.</div>
+      <video id="videoVinculo" autoplay playsinline muted></video>
+      <button class="btn-primary" onclick="capturarVinculo()">Verificar rostro</button>
+      <button class="btn-cancelar" onclick="volverDesdeVinculo()">Volver</button>
+      <div class="status" id="statusVinculo"></div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="principal">
+    <div class="nombre" id="nombreUsuario"></div>
+    <div class="id" id="idUsuario"></div>
+
+    <div id="vistaBotones">
+      <button class="btn-entrada" id="btnEntrada" onclick="pedirPin('Entrada')">Marcar entrada</button>
+      <button class="btn-almuerzo-out" id="btnSalidaAlmuerzo" onclick="pedirPin('Salida almuerzo')">Salida a almorzar</button>
+      <button class="btn-almuerzo-in" id="btnVueltaAlmuerzo" onclick="pedirPin('Vuelta almuerzo')">Vuelta de almorzar</button>
+      <button class="btn-salida" id="btnSalida" onclick="pedirPin('Salida')">Marcar salida</button>
+    </div>
+
+    <div id="vistaPin" class="hidden">
+      <div class="sub" id="pinPrompt"></div>
+      <input type="password" id="pinConfirmarInput" placeholder="PIN" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <button class="btn-primary" onclick="irAVerificarRostro()">Confirmar</button>
+      <button class="btn-cancelar" onclick="cancelarPin()">Cancelar</button>
+      <div class="link-reset" onclick="irARecuperarPin()">¿Olvidaste tu PIN?</div>
+    </div>
+
+    <div id="vistaRecuperarRostro" class="hidden">
+      <div class="sub">Mirá a la cámara para confirmar que sos vos.</div>
+      <video id="videoRecuperar" autoplay playsinline muted></video>
+      <button class="btn-primary" onclick="capturarRecuperar()">Verificar rostro</button>
+      <button class="btn-cancelar" onclick="cancelarRecuperar()">Cancelar</button>
+      <div class="status" id="statusRecuperarRostro"></div>
+    </div>
+
+    <div id="vistaNuevoPin" class="hidden">
+      <div class="sub">Elegí tu nuevo PIN.</div>
+      <input type="password" id="nuevoPinInput" placeholder="Nuevo PIN de 4 números" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <input type="password" id="nuevoPinConfirmInput" placeholder="Repetí el nuevo PIN" inputmode="numeric" pattern="[0-9]*" maxlength="4">
+      <button class="btn-primary" onclick="guardarNuevoPin()">Guardar nuevo PIN</button>
+      <button class="btn-cancelar" onclick="cancelarRecuperar()">Cancelar</button>
+      <div class="status" id="statusNuevoPin"></div>
+    </div>
+
+    <div id="vistaRostroFichaje" class="hidden">
+      <div class="sub">Mirá a la cámara para verificar tu identidad.</div>
+      <video id="videoFichaje" autoplay playsinline muted></video>
+      <button class="btn-primary" onclick="capturarRostroFichaje()">Verificar y marcar</button>
+      <button class="btn-cancelar" onclick="cancelarRostroFichaje()">Cancelar</button>
+      <div class="status" id="statusRostroFichaje"></div>
+    </div>
+
+    <div id="vistaSaludo" class="hidden">
+      <div class="saludo" id="saludoTexto"></div>
+    </div>
+
+    <div class="status" id="statusPrincipal"></div>
+    <div class="hist" id="historial"></div>
+    <div class="link-reset" onclick="resetear()">No soy yo / cambiar usuario</div>
+  </div>
+
+  <script>
+    const TOKEN_KEY = 'fichero_token_berazategui';
+    const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/weights';
+
+    let tipoPendiente = null;
+    let pinPendiente = null;
+    let streamActual = null;
+    let modelosListos = false;
+    const modelosPromise = (async function () {
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+      modelosListos = true;
+    })();
+
+    document.addEventListener('DOMContentLoaded', init);
+
+    function init() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (token) {
+        cargarPrincipal(token);
+      } else {
+        mostrar('registro');
+      }
+    }
+
+    function mostrar(id) {
+      document.getElementById('registro').classList.toggle('hidden', id !== 'registro');
+      document.getElementById('principal').classList.toggle('hidden', id !== 'principal');
+    }
+
+    // ---- Cámara ----
+    async function iniciarCamara(videoEl) {
+      streamActual = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+      videoEl.srcObject = streamActual;
+      await videoEl.play();
+    }
+
+    function detenerCamara() {
+      if (streamActual) {
+        streamActual.getTracks().forEach(t => t.stop());
+        streamActual = null;
+      }
+    }
+
+    async function capturarDescriptor(video) {
+      const resultado = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+      if (!resultado) return null;
+      return Array.from(resultado.descriptor);
+    }
+
+    async function prepararCamara(videoEl, statusElId) {
+      const statusEl = document.getElementById(statusElId);
+      try {
+        statusEl.textContent = modelosListos ? '' : 'Cargando reconocimiento facial (puede tardar la primera vez)...';
+        await modelosPromise;
+        statusEl.textContent = 'Pidiendo permiso de cámara...';
+        await iniciarCamara(videoEl);
+        statusEl.textContent = '';
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
+      }
+    }
+
+    // ---- Registro ----
+    function irACapturaRostro() {
+      const nombre = document.getElementById('nombreInput').value.trim();
+      const pin = document.getElementById('pinInput').value.trim();
+      const pinConfirm = document.getElementById('pinConfirmInput').value.trim();
+      const consentimiento = document.getElementById('consentimientoInput').checked;
+
+      if (!nombre || nombre.split(' ').filter(Boolean).length < 2) {
+        document.getElementById('statusRegistro').textContent = 'Ingresá nombre y apellido completos.';
+        return;
+      }
+      if (!/^\d{4}$/.test(pin)) {
+        document.getElementById('statusRegistro').textContent = 'El PIN tiene que ser de 4 números.';
+        return;
+      }
+      if (pin !== pinConfirm) {
+        document.getElementById('statusRegistro').textContent = 'Los PIN no coinciden.';
+        return;
+      }
+      if (!consentimiento) {
+        document.getElementById('statusRegistro').textContent = 'Hace falta aceptar el consentimiento para continuar.';
+        return;
+      }
+
+      document.getElementById('registroDatos').classList.add('hidden');
+      document.getElementById('registroRostro').classList.remove('hidden');
+      prepararCamara(document.getElementById('videoRegistro'), 'statusRostroRegistro');
+    }
+
+    function volverDatosRegistro() {
+      detenerCamara();
+      document.getElementById('registroRostro').classList.add('hidden');
+      document.getElementById('registroDatos').classList.remove('hidden');
+    }
+
+    // ---- Vincular celular a un usuario existente (cambio de teléfono) ----
+    function irAVincular() {
+      document.getElementById('registroDatos').classList.add('hidden');
+      document.getElementById('vinculo').classList.remove('hidden');
+      prepararCamara(document.getElementById('videoVinculo'), 'statusVinculo');
+    }
+
+    function volverDesdeVinculo() {
+      detenerCamara();
+      document.getElementById('vinculo').classList.add('hidden');
+      document.getElementById('registroDatos').classList.remove('hidden');
+    }
+
+    async function capturarVinculo() {
+      document.getElementById('statusVinculo').textContent = 'Analizando...';
+      const video = document.getElementById('videoVinculo');
+      const descriptor = await capturarDescriptor(video);
+      if (!descriptor) {
+        document.getElementById('statusVinculo').textContent = 'No se detectó una cara. Probá de nuevo.';
+        return;
+      }
+      detenerCamara();
+      document.getElementById('statusVinculo').textContent = 'Verificando...';
+      google.script.run
+        .withSuccessHandler(function (res) {
+          localStorage.setItem(TOKEN_KEY, res.token);
+          cargarPrincipal(res.token);
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('statusVinculo').textContent = 'Error: ' + err.message;
+        })
+        .vincularDispositivo(descriptor);
+    }
+
+    async function capturarRostroRegistro() {
+      document.getElementById('statusRostroRegistro').textContent = 'Analizando...';
+      const video = document.getElementById('videoRegistro');
+      const descriptor = await capturarDescriptor(video);
+      if (!descriptor) {
+        document.getElementById('statusRostroRegistro').textContent = 'No se detectó una cara. Buscá mejor luz y probá de nuevo.';
+        return;
+      }
+      detenerCamara();
+      const nombre = document.getElementById('nombreInput').value.trim();
+      const pin = document.getElementById('pinInput').value.trim();
+      document.getElementById('statusRostroRegistro').textContent = 'Registrando...';
+      google.script.run
+        .withSuccessHandler(function (res) {
+          localStorage.setItem(TOKEN_KEY, res.token);
+          cargarPrincipal(res.token);
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('statusRostroRegistro').textContent = 'Error: ' + err.message;
+        })
+        .registrarUsuario(nombre, pin, descriptor, true);
+    }
+
+    function cargarPrincipal(token) {
+      google.script.run
+        .withSuccessHandler(function (usuario) {
+          if (!usuario) { localStorage.removeItem(TOKEN_KEY); mostrar('registro'); return; }
+          document.getElementById('nombreUsuario').textContent = usuario.nombre;
+          document.getElementById('idUsuario').textContent = usuario.id;
+          mostrar('principal');
+          actualizarHistorial(token);
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('statusRegistro').textContent = 'Error: ' + err.message;
+        })
+        .getUsuarioPorToken(token);
+    }
+
+    function actualizarHistorial(token) {
+      google.script.run
+        .withSuccessHandler(function (tipos) {
+          const cont = {};
+          tipos.forEach(t => cont[t] = (cont[t] || 0) + 1);
+          document.getElementById('btnEntrada').disabled = !!cont['Entrada'];
+          document.getElementById('btnSalidaAlmuerzo').disabled = !cont['Entrada'] || !!cont['Salida almuerzo'];
+          document.getElementById('btnVueltaAlmuerzo').disabled = !cont['Salida almuerzo'] || !!cont['Vuelta almuerzo'];
+          document.getElementById('btnSalida').disabled = !cont['Entrada'] || !!cont['Salida'];
+          const hist = document.getElementById('historial');
+          if (tipos.length) {
+            hist.innerHTML = '<div style="font-size:12px;color:#64748b;margin-bottom:6px;">Hoy marcaste:</div>' +
+              tipos.map(t => '<div class="hist-item"><span>' + t + '</span></div>').join('');
+          } else {
+            hist.innerHTML = '';
+          }
+        })
+        .getFichajesDeHoy(token);
+    }
+
+    // ---- Marcar fichaje: PIN + rostro ----
+    function pedirPin(tipo) {
+      tipoPendiente = tipo;
+      document.getElementById('vistaBotones').classList.add('hidden');
+      document.getElementById('vistaPin').classList.remove('hidden');
+      document.getElementById('pinPrompt').textContent = 'Ingresá tu PIN para confirmar: ' + tipo;
+      document.getElementById('pinConfirmarInput').value = '';
+      document.getElementById('statusPrincipal').textContent = '';
+      document.getElementById('pinConfirmarInput').focus();
+    }
+
+    function cancelarPin() {
+      tipoPendiente = null;
+      document.getElementById('vistaPin').classList.add('hidden');
+      document.getElementById('vistaBotones').classList.remove('hidden');
+      document.getElementById('statusPrincipal').textContent = '';
+    }
+
+    function irAVerificarRostro() {
+      const pin = document.getElementById('pinConfirmarInput').value.trim();
+      if (!/^\d{4}$/.test(pin)) {
+        document.getElementById('statusPrincipal').textContent = 'El PIN tiene que ser de 4 números.';
+        return;
+      }
+      pinPendiente = pin;
+      document.getElementById('vistaPin').classList.add('hidden');
+      document.getElementById('vistaRostroFichaje').classList.remove('hidden');
+      prepararCamara(document.getElementById('videoFichaje'), 'statusRostroFichaje');
+    }
+
+    // ---- Olvidé mi PIN ----
+    let descriptorRecuperado = null;
+
+    function irARecuperarPin() {
+      document.getElementById('vistaPin').classList.add('hidden');
+      document.getElementById('vistaRecuperarRostro').classList.remove('hidden');
+      prepararCamara(document.getElementById('videoRecuperar'), 'statusRecuperarRostro');
+    }
+
+    function cancelarRecuperar() {
+      detenerCamara();
+      descriptorRecuperado = null;
+      tipoPendiente = null;
+      document.getElementById('vistaRecuperarRostro').classList.add('hidden');
+      document.getElementById('vistaNuevoPin').classList.add('hidden');
+      document.getElementById('vistaBotones').classList.remove('hidden');
+    }
+
+    async function capturarRecuperar() {
+      document.getElementById('statusRecuperarRostro').textContent = 'Analizando...';
+      const video = document.getElementById('videoRecuperar');
+      const descriptor = await capturarDescriptor(video);
+      if (!descriptor) {
+        document.getElementById('statusRecuperarRostro').textContent = 'No se detectó una cara. Probá de nuevo.';
+        return;
+      }
+      detenerCamara();
+      descriptorRecuperado = descriptor;
+      document.getElementById('vistaRecuperarRostro').classList.add('hidden');
+      document.getElementById('vistaNuevoPin').classList.remove('hidden');
+      document.getElementById('nuevoPinInput').value = '';
+      document.getElementById('nuevoPinConfirmInput').value = '';
+      document.getElementById('statusNuevoPin').textContent = '';
+    }
+
+    function guardarNuevoPin() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const nuevoPin = document.getElementById('nuevoPinInput').value.trim();
+      const nuevoPinConfirm = document.getElementById('nuevoPinConfirmInput').value.trim();
+      if (!/^\d{4}$/.test(nuevoPin)) {
+        document.getElementById('statusNuevoPin').textContent = 'El PIN tiene que ser de 4 números.';
+        return;
+      }
+      if (nuevoPin !== nuevoPinConfirm) {
+        document.getElementById('statusNuevoPin').textContent = 'Los PIN no coinciden.';
+        return;
+      }
+      document.getElementById('statusNuevoPin').textContent = 'Guardando...';
+      google.script.run
+        .withSuccessHandler(function () {
+          descriptorRecuperado = null;
+          tipoPendiente = null;
+          document.getElementById('vistaNuevoPin').classList.add('hidden');
+          document.getElementById('vistaBotones').classList.remove('hidden');
+          document.getElementById('statusPrincipal').textContent = 'PIN actualizado. Ya podés usarlo.';
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('statusNuevoPin').textContent = 'Error: ' + err.message;
+        })
+        .recuperarPin(token, descriptorRecuperado, nuevoPin);
+    }
+
+    function cancelarRostroFichaje() {
+      detenerCamara();
+      tipoPendiente = null;
+      pinPendiente = null;
+      document.getElementById('vistaRostroFichaje').classList.add('hidden');
+      document.getElementById('vistaBotones').classList.remove('hidden');
+      document.getElementById('statusPrincipal').textContent = '';
+    }
+
+    async function capturarRostroFichaje() {
+      document.getElementById('statusRostroFichaje').textContent = 'Analizando...';
+      const video = document.getElementById('videoFichaje');
+      const descriptor = await capturarDescriptor(video);
+      if (!descriptor) {
+        document.getElementById('statusRostroFichaje').textContent = 'No se detectó una cara. Probá de nuevo con mejor luz.';
+        return;
+      }
+      detenerCamara();
+      marcar(tipoPendiente, pinPendiente, descriptor);
+    }
+
+    function marcar(tipo, pin, descriptor) {
+      const token = localStorage.getItem(TOKEN_KEY);
+      document.getElementById('statusRostroFichaje').textContent = 'Guardando...';
+      google.script.run
+        .withSuccessHandler(function (res) {
+          mostrarSaludo(res.mensaje);
+          tipoPendiente = null;
+          pinPendiente = null;
+          actualizarHistorial(token);
+        })
+        .withFailureHandler(function (err) {
+          document.getElementById('statusRostroFichaje').textContent = 'Error: ' + err.message;
+        })
+        .marcarFichaje(token, tipo, pin, descriptor);
+    }
+
+    function mostrarSaludo(mensaje) {
+      document.getElementById('vistaRostroFichaje').classList.add('hidden');
+      document.getElementById('vistaSaludo').classList.remove('hidden');
+      document.getElementById('saludoTexto').textContent = mensaje;
+      setTimeout(function () {
+        document.getElementById('vistaSaludo').classList.add('hidden');
+        document.getElementById('vistaBotones').classList.remove('hidden');
+      }, 2500);
+    }
+
+    function resetear() {
+      if (confirm('¿Cambiar de usuario en este celular?')) {
+        localStorage.removeItem(TOKEN_KEY);
+        mostrar('registro');
+      }
+    }
+  </script>
+</body>
+</html>
