@@ -54,9 +54,19 @@
     .link-reset { display:block; text-align:center; margin-top:16px; font-size:12px; color:#64748b; text-decoration: underline; cursor:pointer; }
     .consentimiento { display:flex; gap:8px; font-size:12px; color:#94a3b8; margin-bottom:14px; align-items:flex-start; line-height:1.4; }
     .consentimiento input { width:auto; margin-top:2px; }
+    .video-wrap { position: relative; margin-bottom: 14px; }
     video {
-      width: 100%; border-radius: 12px; background: #000; margin-bottom: 14px;
+      width: 100%; border-radius: 12px; background: #000; display: block;
       transform: scaleX(-1); aspect-ratio: 3 / 4; object-fit: cover;
+    }
+    .guia-ovalo {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 60%; height: 76%; border: 3px dashed rgba(255,255,255,.6);
+      border-radius: 50%; pointer-events: none;
+    }
+    .guia-texto {
+      position: absolute; bottom: 8px; left: 0; right: 0; text-align: center;
+      font-size: 12px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none;
     }
     .saludo { text-align: center; font-size: 22px; font-weight: 700; padding: 40px 10px; line-height: 1.4; }
   </style>
@@ -82,7 +92,11 @@
 
     <div id="registroRostro" class="hidden">
       <div class="sub">Encuadrá tu cara con buena luz y tocá "Capturar rostro".</div>
-      <video id="videoRegistro" autoplay playsinline muted></video>
+      <div class="video-wrap">
+        <video id="videoRegistro" autoplay playsinline muted></video>
+        <div class="guia-ovalo"></div>
+        <div class="guia-texto">Centrá tu cara en el óvalo</div>
+      </div>
       <button class="btn-primary" onclick="capturarRostroRegistro()">Capturar rostro</button>
       <button class="btn-cancelar" onclick="volverDatosRegistro()">Volver</button>
       <div class="status" id="statusRostroRegistro"></div>
@@ -90,7 +104,11 @@
 
     <div id="vinculo" class="hidden">
       <div class="sub">Mirá a la cámara para reconocerte y vincular este celular a tu usuario existente.</div>
-      <video id="videoVinculo" autoplay playsinline muted></video>
+      <div class="video-wrap">
+        <video id="videoVinculo" autoplay playsinline muted></video>
+        <div class="guia-ovalo"></div>
+        <div class="guia-texto">Centrá tu cara en el óvalo</div>
+      </div>
       <button class="btn-primary" onclick="capturarVinculo()">Verificar rostro</button>
       <button class="btn-cancelar" onclick="volverDesdeVinculo()">Volver</button>
       <div class="status" id="statusVinculo"></div>
@@ -118,7 +136,11 @@
 
     <div id="vistaRecuperarRostro" class="hidden">
       <div class="sub">Mirá a la cámara para confirmar que sos vos.</div>
-      <video id="videoRecuperar" autoplay playsinline muted></video>
+      <div class="video-wrap">
+        <video id="videoRecuperar" autoplay playsinline muted></video>
+        <div class="guia-ovalo"></div>
+        <div class="guia-texto">Centrá tu cara en el óvalo</div>
+      </div>
       <button class="btn-primary" onclick="capturarRecuperar()">Verificar rostro</button>
       <button class="btn-cancelar" onclick="cancelarRecuperar()">Cancelar</button>
       <div class="status" id="statusRecuperarRostro"></div>
@@ -135,7 +157,11 @@
 
     <div id="vistaRostroFichaje" class="hidden">
       <div class="sub">Mirá a la cámara para verificar tu identidad.</div>
-      <video id="videoFichaje" autoplay playsinline muted></video>
+      <div class="video-wrap">
+        <video id="videoFichaje" autoplay playsinline muted></video>
+        <div class="guia-ovalo"></div>
+        <div class="guia-texto">Centrá tu cara en el óvalo</div>
+      </div>
       <button class="btn-primary" onclick="capturarRostroFichaje()">Verificar y marcar</button>
       <button class="btn-cancelar" onclick="cancelarRostroFichaje()">Cancelar</button>
       <div class="status" id="statusRostroFichaje"></div>
@@ -195,6 +221,23 @@
     function mostrar(id) {
       document.getElementById('registro').classList.toggle('hidden', id !== 'registro');
       document.getElementById('principal').classList.toggle('hidden', id !== 'principal');
+    }
+
+    // ---- Ubicación (GPS) ----
+    // Se pide en el momento de marcar el fichaje. Si el celular no tiene GPS, lo deniega,
+    // o no responde a tiempo, seguimos igual (el backend lo va a registrar como "sin datos
+    // de ubicación") — mientras el sistema esté en modo prueba, nunca bloquea por esto.
+    function obtenerUbicacion() {
+      return new Promise(function (resolve) {
+        if (!navigator.geolocation) { resolve(null); return; }
+        navigator.geolocation.getCurrentPosition(
+          function (pos) {
+            resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, precision: pos.coords.accuracy });
+          },
+          function () { resolve(null); },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        );
+      });
     }
 
     // ---- Cámara ----
@@ -464,13 +507,18 @@
         return;
       }
       detenerCamara();
-      marcar(tipoPendiente, pinPendiente, descriptor);
+      document.getElementById('statusRostroFichaje').textContent = 'Ubicando...';
+      const ubicacion = await obtenerUbicacion();
+      marcar(tipoPendiente, pinPendiente, descriptor, ubicacion);
     }
 
-    function marcar(tipo, pin, descriptor) {
+    function marcar(tipo, pin, descriptor, ubicacion) {
       const token = localStorage.getItem(TOKEN_KEY);
+      const lat = ubicacion ? ubicacion.lat : null;
+      const lon = ubicacion ? ubicacion.lon : null;
+      const precision = ubicacion ? ubicacion.precision : null;
       document.getElementById('statusRostroFichaje').textContent = 'Guardando...';
-      llamarApi('marcarFichaje', [token, tipo, pin, descriptor])
+      llamarApi('marcarFichaje', [token, tipo, pin, descriptor, lat, lon, precision])
         .then(function (res) {
           mostrarSaludo(res.mensaje);
           tipoPendiente = null;
