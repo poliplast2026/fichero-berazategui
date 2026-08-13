@@ -20,9 +20,8 @@ const MODO_PRUEBA_UBICACION = true;
 const RADIO_TOLERANCIA_METROS = 150;
 
 const DEPOSITOS = [
+  { nombre: 'Mini Parque Vergara (Berazategui)', lat: -34.782175430731726, lon: -58.22225802328305 },
   { nombre: 'Magdalena 962 (Villa Domínico)', lat: -34.7018584, lon: -58.3372409 }
-  // Falta: "Mini Parque Vergara" (Berazategui) — agregar acá cuando se confirmen las
-  // coordenadas decimales exactas (ej: { nombre: 'Mini Parque Vergara', lat: -34.xxxx, lon: -58.xxxx }).
 ];
 
 // Paleta de colores pastel, uno por usuario (se asigna en orden de registro).
@@ -505,12 +504,24 @@ function promptReiniciarPin() {
   ui.alert('No se encontró el ID ' + id + '.');
 }
 
+// Prende un disparador automático: todas las noches a las 23:00 se genera solo el
+// resumen del día, sin que haga falta entrar a tocar el menú. Se ejecuta una vez
+// (tocando el botón del menú); Apps Script se encarga de repetirlo todos los días.
+function activarResumenAutomatico() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'generarResumenDeHoy') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('generarResumenDeHoy').timeBased().everyDays(1).atHour(23).create();
+  SpreadsheetApp.getUi().alert('Listo. Todas las noches a las 23:00 se va a generar solo el resumen del día en la pestaña "Resumen diario".');
+}
+
 // ---- Menú dentro de la planilla de Google ----
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Fichero')
     .addItem('Generar resumen de hoy', 'generarResumenDeHoy')
     .addItem('Generar resumen de una fecha...', 'promptResumenFecha')
+    .addItem('Activar resumen automático (todas las noches)...', 'activarResumenAutomatico')
     .addSeparator()
     .addItem('Formatear planilla (colores)', 'formatearTodo')
     .addItem('Reiniciar PIN de un usuario...', 'promptReiniciarPin')
