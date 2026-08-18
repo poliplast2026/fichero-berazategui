@@ -12,12 +12,31 @@ const USUARIOS_HEADERS = ['ID', 'Nombre completo', 'Token dispositivo', 'PIN (pr
 const FICHAJES_HEADERS = ['Fecha', 'Hora', 'ID Usuario', 'Nombre', 'Tipo', 'Timestamp', 'Depósito más cercano', 'Distancia (m)', 'Precisión GPS (m)'];
 
 // ---- Ubicación de los depósitos (para el control de "solo fichar desde ahí") ----
-// Mientras MODO_PRUEBA_UBICACION esté en true, el sistema NUNCA rechaza un fichaje por
-// ubicación — solo la registra en la planilla para poder revisar qué tan precisa es el
-// GPS de la gente en la práctica. Cuando Felipe confirme que está todo OK, cambiar esto
-// a false: ahí sí va a rechazar fichajes fuera del radio de tolerancia.
+// Mientras MODO_PRUEBA_UBICACION esté en true, el sistema NO rechaza un fichaje por estar
+// lejos del depósito — solo lo registra en la planilla para poder revisar el radio antes
+// de exigirlo en serio. Cuando Felipe confirme que el radio de 150m es correcto para los
+// dos depósitos, cambiar esto a false: ahí sí va a rechazar fichajes fuera de rango.
+//
+// OJO: esto es DISTINTO de exigir que haya ubicación. Tener ubicación activa y precisa es
+// obligatorio siempre (ver EXIGIR_UBICACION_PRECISA más abajo), aunque este modo prueba
+// siga en true — así no se repite el problema de fichajes "Sin datos de ubicación".
 const MODO_PRUEBA_UBICACION = true;
 const RADIO_TOLERANCIA_METROS = 150;
+
+// Si es true (recomendado, y ahora es el comportamiento por defecto), un fichaje SIN
+// coordenadas o con una precisión de GPS peor que PRECISION_MAXIMA_METROS se rechaza
+// directamente, sin importar el valor de MODO_PRUEBA_UBICACION. Esto es lo que hace que
+// tener la ubicación activa (y precisa, no aproximada por wifi/red) sea condición
+// excluyente para fichar, tal cual se pidió.
+const EXIGIR_UBICACION_PRECISA = true;
+
+// Umbral de precisión del GPS (metros) que reporta el propio celular (pos.coords.accuracy).
+// Mirando los fichajes reales ya cargados, cuando el GPS anduvo bien la precisión rondó
+// 13-31m. Un fichaje con "ubicación aproximada" (wifi/red, sin GPS real) suele reportar
+// varios cientos o miles de metros de precisión. 75m da margen para GPS mediocre en
+// interiores sin aceptar ubicaciones aproximadas. Ajustar acá si en la práctica rechaza
+// de más (subir el número) o dej pasar ubicaciones muy imprecisas (bajarlo).
+const PRECISION_MAXIMA_METROS = 75;
 
 const DEPOSITOS = [
   { nombre: 'Mini Parque Vergara (Berazategui)', lat: -34.782175430731726, lon: -58.22225802328305 },
@@ -35,8 +54,16 @@ const COLOR_SALIDA = '#b91c1c';  // rojo
 
 // Umbral de similitud facial (distancia euclidiana entre descriptores).
 // Más bajo = más estricto (más rechazos). Más alto = más laxo (más falsos positivos).
-// 0.6 es el valor por defecto recomendado por face-api.js; se puede ajustar acá si en la
-// práctica rechaza gente que sí es, o deja pasar gente que no es.
+// 0.6 es el valor por defecto recomendado por face-api.js, calibrado con fotos de estudio
+// (dataset LFW). En la práctica, con capturas de un solo frame de la cámara del celular,
+// midiendo los usuarios ya registrados en esta planilla, la distancia entre DOS FOTOS DE
+// LA MISMA persona llegó a 0.77 — más alta que la distancia mínima entre DOS PERSONAS
+// DISTINTAS (0.60). Es decir, con captura de un solo frame el umbral no separa bien los
+// casos. NO bajar este número todavía: bajarlo sin arreglar antes la calidad de la
+// captura (ver capturarDescriptor() e "iniciarAutoEscaneo" en index.html, que ahora
+// promedian 3 lecturas) generaría más rechazos a gente real. Primero recapturar a todos
+// los usuarios con el flujo mejorado, medir de nuevo la separación entre personas, y
+// recién ahí bajar este valor con datos reales.
 const UMBRAL_ROSTRO = 0.6;
 
 // ---- API para la página externa (la que usa la cámara) ----
@@ -352,12 +379,25 @@ function marcarFichaje(token, tipo, pin, descriptorRostro, lat, lon, precisionGp
     throw new Error('El rostro no coincide con el registrado.');
   }
 
+  // Condición excluyente: tiene que haber ubicación, y tiene que ser precisa (GPS real,
+  // no aproximada por wifi/red). Esto corre SIEMPRE, independiente de MODO_PRUEBA_UBICACION
+  // — no es parte del "modo prueba", es un requisito para poder fichar.
+  if (EXIGIR_UBICACION_PRECISA) {
+    if (typeof lat !== 'number' || typeof lon !== 'number') {
+      throw new Error('No se pudo obtener tu ubicación. Activá la ubicación (GPS) del celular y volvé a intentar.');
+    }
+    if (typeof precisionGps !== 'number' || precisionGps > PRECISION_MAXIMA_METROS) {
+      throw new Error('Tu ubicación no es lo suficientemente precisa' + (typeof precisionGps === 'number' ? ' (±' + Math.round(precisionGps) + ' m)' : '') + '. Activá la "ubicación precisa" del GPS en el celular (no la aproximada) y volvé a intentar.');
+    }
+  }
+
   const cercano = depositoMasCercano_(lat, lon);
   const nombreDeposito = cercano ? cercano.nombre : 'Sin datos de ubicación';
   const distanciaDeposito = cercano ? Math.round(cercano.distancia) : '';
 
-  // El bloqueo por ubicación solo se activa cuando MODO_PRUEBA_UBICACION pase a false.
-  // Hasta entonces, un fichaje lejos del depósito se guarda igual (para poder revisarlo).
+  // El bloqueo por estar LEJOS DEL DEPÓSITO (aun con ubicación precisa) solo se activa
+  // cuando MODO_PRUEBA_UBICACION pase a false. Hasta entonces, un fichaje lejos del
+  // depósito se guarda igual (para poder revisar si el radio de 150m es el correcto).
   if (!MODO_PRUEBA_UBICACION && cercano && distanciaDeposito > RADIO_TOLERANCIA_METROS) {
     throw new Error('Estás fichando muy lejos del depósito (' + distanciaDeposito + ' m de ' + nombreDeposito + '). Si creés que es un error, avisá al administrador.');
   }
