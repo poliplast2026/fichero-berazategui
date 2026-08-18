@@ -286,18 +286,39 @@
     }
 
     // ---- Ubicación (GPS) ----
-    // Se pide en el momento de marcar el fichaje. Si el celular no tiene GPS, lo deniega,
-    // o no responde a tiempo, seguimos igual (el backend lo va a registrar como "sin datos
-    // de ubicación") — mientras el sistema esté en modo prueba, nunca bloquea por esto.
-    function obtenerUbicacion() {
-      return new Promise(function (resolve) {
-        if (!navigator.geolocation) { resolve(null); return; }
+    // Condición EXCLUYENTE para fichar: tiene que haber ubicación, y tiene que ser precisa
+    // (GPS real, no aproximada por wifi/red). Esta función RECHAZA (no resuelve null) si el
+    // celular no tiene GPS, si se deniega el permiso, si tarda demasiado, o si la precisión
+    // reportada es peor que PRECISION_MAXIMA_METROS_CLIENTE — así el flujo de fichaje no
+    // puede avanzar sin ubicación buena. El backend vuelve a validar esto igual (no confiamos
+    // solo en el chequeo del cliente), pero conviene frenarlo acá antes para no hacerle
+    // sacar una foto a alguien que después va a ser rechazado igual.
+    const PRECISION_MAXIMA_METROS_CLIENTE = 75;
+
+    function obtenerUbicacionObligatoria() {
+      return new Promise(function (resolve, reject) {
+        if (!navigator.geolocation) {
+          reject(new Error('Este celular/navegador no soporta ubicación. No se puede fichar así.'));
+          return;
+        }
         navigator.geolocation.getCurrentPosition(
           function (pos) {
-            resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, precision: pos.coords.accuracy });
+            const precision = pos.coords.accuracy;
+            if (typeof precision !== 'number' || precision > PRECISION_MAXIMA_METROS_CLIENTE) {
+              reject(new Error('Tu ubicación no es lo suficientemente precisa (±' + Math.round(precision || 0) + ' m). Activá la "ubicación precisa" (GPS) en el celular, no la aproximada, y probá de nuevo.'));
+              return;
+            }
+            resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude, precision: precision });
           },
-          function () { resolve(null); },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+          function (err) {
+            const msg = err && err.code === 1
+              ? 'Activá el permiso de ubicación para esta página en el celular para poder fichar.'
+              : err && err.code === 3
+                ? 'La ubicación tardó demasiado en responder. Probá salir a un lugar con mejor señal de GPS y reintentar.'
+                : 'No se pudo obtener tu ubicación. Activá el GPS del celular y probá de nuevo.';
+            reject(new Error(msg));
+          },
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
         );
       });
     }
@@ -316,12 +337,46 @@
       }
     }
 
-    async function capturarDescriptor(video) {
-      const resultado = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+    // inputSize más grande (default de face-api.js es 416) = detección más precisa del
+    // recuadro de la cara, a costa de un poco más de tiempo de proceso. Como esto se usa
+    // pocas veces por persona por día (no es un video en vivo constante), vale la pena.
+    const OPCIONES_DETECTOR = new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.5 });
+
+    async function capturarDescriptorUnaVez(video) {
+      const resultado = await faceapi.detectSingleFace(video, OPCIONES_DETECTOR)
         .withFaceLandmarks()
         .withFaceDescriptor();
       if (!resultado) return null;
       return Array.from(resultado.descriptor);
+    }
+
+    // Un solo frame de la cámara del celular es ruidoso (luz, ángulo, movimiento). Antes
+    // se comparaba/guardaba un único descriptor y eso generaba falsos positivos entre
+    // personas distintas y falsos rechazos de la misma persona (medido en la planilla real:
+    // dos capturas de la misma persona llegaron a estar más lejos entre sí que la distancia
+    // mínima entre dos personas distintas). Acá promediamos varias capturas estables para
+    // conseguir un descriptor mucho más representativo, tanto al registrar como al fichar.
+    async function capturarDescriptorPromedio(video, muestras, statusEl) {
+      muestras = muestras || 3;
+      const descriptores = [];
+      let intentos = 0;
+      const intentosMax = muestras * 4; // margen por si algún frame no detecta cara
+      while (descriptores.length < muestras && intentos < intentosMax) {
+        intentos++;
+        const d = await capturarDescriptorUnaVez(video);
+        if (d) {
+          descriptores.push(d);
+          if (statusEl) statusEl.textContent = 'Analizando... (' + descriptores.length + '/' + muestras + ')';
+        }
+        await new Promise(function (r) { setTimeout(r, 180); });
+      }
+      if (descriptores.length === 0) return null;
+      const largo = descriptores[0].length;
+      const promedio = new Array(largo).fill(0);
+      descriptores.forEach(function (d) {
+        for (let i = 0; i < largo; i++) promedio[i] += d[i] / descriptores.length;
+      });
+      return promedio;
     }
 
     async function prepararCamara(videoEl, statusElId, autoCallback) {
@@ -352,7 +407,7 @@
         if (procesando || !video.srcObject) return;
         procesando = true;
         try {
-          const resultado = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions());
+          const resultado = await faceapi.detectSingleFace(video, OPCIONES_DETECTOR);
           if (resultado) {
             confirmaciones++;
             if (confirmaciones === 1) statusEl.textContent = 'Detectando...';
@@ -425,9 +480,10 @@
 
     async function capturarVinculo() {
       detenerAutoEscaneo();
-      document.getElementById('statusVinculo').textContent = 'Analizando...';
+      const statusEl = document.getElementById('statusVinculo');
+      statusEl.textContent = 'Analizando...';
       const video = document.getElementById('videoVinculo');
-      const descriptor = await capturarDescriptor(video);
+      const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
       if (!descriptor) {
         document.getElementById('statusVinculo').textContent = 'No se detectó una cara. Probá de nuevo.';
         return;
@@ -446,9 +502,10 @@
 
     async function capturarRostroRegistro() {
       detenerAutoEscaneo();
-      document.getElementById('statusRostroRegistro').textContent = 'Analizando...';
+      const statusEl = document.getElementById('statusRostroRegistro');
+      statusEl.textContent = 'Analizando...';
       const video = document.getElementById('videoRegistro');
-      const descriptor = await capturarDescriptor(video);
+      const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
       if (!descriptor) {
         document.getElementById('statusRostroRegistro').textContent = 'No se detectó una cara. Buscá mejor luz y probá de nuevo.';
         return;
@@ -524,6 +581,11 @@
       document.getElementById('statusPrincipal').textContent = '';
     }
 
+    let ubicacionPendiente = null;
+
+    // Ubicación primero, cámara después: si no hay GPS preciso no tiene sentido hacerle
+    // sacar una foto a la persona para después rechazarla igual. Es condición excluyente,
+    // así que si esto falla NO se avanza a la pantalla de la cámara.
     function irAVerificarRostro() {
       const pin = document.getElementById('pinConfirmarInput').value.trim();
       if (!/^\d{4}$/.test(pin)) {
@@ -531,9 +593,18 @@
         return;
       }
       pinPendiente = pin;
-      document.getElementById('vistaPin').classList.add('hidden');
-      document.getElementById('vistaRostroFichaje').classList.remove('hidden');
-      prepararCamara(document.getElementById('videoFichaje'), 'statusRostroFichaje', capturarRostroFichaje);
+      document.getElementById('statusPrincipal').textContent = 'Obteniendo ubicación (GPS)...';
+      obtenerUbicacionObligatoria()
+        .then(function (ubicacion) {
+          ubicacionPendiente = ubicacion;
+          document.getElementById('statusPrincipal').textContent = '';
+          document.getElementById('vistaPin').classList.add('hidden');
+          document.getElementById('vistaRostroFichaje').classList.remove('hidden');
+          prepararCamara(document.getElementById('videoFichaje'), 'statusRostroFichaje', capturarRostroFichaje);
+        })
+        .catch(function (err) {
+          document.getElementById('statusPrincipal').textContent = err.message + ' (tocá "Confirmar" de nuevo para reintentar)';
+        });
     }
 
     // ---- Olvidé mi PIN ----
@@ -557,9 +628,10 @@
 
     async function capturarRecuperar() {
       detenerAutoEscaneo();
-      document.getElementById('statusRecuperarRostro').textContent = 'Analizando...';
+      const statusEl = document.getElementById('statusRecuperarRostro');
+      statusEl.textContent = 'Analizando...';
       const video = document.getElementById('videoRecuperar');
-      const descriptor = await capturarDescriptor(video);
+      const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
       if (!descriptor) {
         document.getElementById('statusRecuperarRostro').textContent = 'No se detectó una cara. Probá de nuevo.';
         return;
@@ -604,6 +676,7 @@
       detenerCamara();
       tipoPendiente = null;
       pinPendiente = null;
+      ubicacionPendiente = null;
       document.getElementById('vistaRostroFichaje').classList.add('hidden');
       document.getElementById('vistaBotones').classList.remove('hidden');
       document.getElementById('statusPrincipal').textContent = '';
@@ -611,17 +684,16 @@
 
     async function capturarRostroFichaje() {
       detenerAutoEscaneo();
-      document.getElementById('statusRostroFichaje').textContent = 'Analizando...';
+      const statusEl = document.getElementById('statusRostroFichaje');
+      statusEl.textContent = 'Analizando...';
       const video = document.getElementById('videoFichaje');
-      const descriptor = await capturarDescriptor(video);
+      const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
       if (!descriptor) {
-        document.getElementById('statusRostroFichaje').textContent = 'No se detectó una cara. Probá de nuevo con mejor luz.';
+        statusEl.textContent = 'No se detectó una cara. Probá de nuevo con mejor luz.';
         return;
       }
       detenerCamara();
-      document.getElementById('statusRostroFichaje').textContent = 'Ubicando...';
-      const ubicacion = await obtenerUbicacion();
-      marcar(tipoPendiente, pinPendiente, descriptor, ubicacion);
+      marcar(tipoPendiente, pinPendiente, descriptor, ubicacionPendiente);
     }
 
     function marcar(tipo, pin, descriptor, ubicacion) {
@@ -636,15 +708,19 @@
           mostrarSaludo(res.mensaje);
           tipoPendiente = null;
           pinPendiente = null;
+          ubicacionPendiente = null;
           actualizarHistorial(token);
         })
         .catch(function (err) {
           if (err.networkError) {
             // Sin conexión: no perdemos el fichaje, lo guardamos para mandarlo solo apenas vuelva la señal.
+            // La ubicación ya fue validada como precisa antes de llegar acá, así que vale
+            // guardarla en la cola tal cual.
             encolarFichaje(params);
             mostrarSaludo('Sin conexión ahora — tu ' + tipo.toLowerCase() + ' quedó guardada y se va a enviar sola apenas vuelva la señal.');
             tipoPendiente = null;
             pinPendiente = null;
+            ubicacionPendiente = null;
             return;
           }
           document.getElementById('statusRostroFichaje').textContent = 'Error: ' + err.message;
