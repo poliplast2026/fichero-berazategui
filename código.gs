@@ -268,6 +268,24 @@ function buscarUsuarioPorRostro_(descriptorRostro) {
   return mejor;
 }
 
+// Genera el próximo ID de usuario mirando el ID MÁS ALTO que ya existe en la planilla,
+// no la cantidad de filas. Antes se usaba sheet.getLastRow() (cantidad de filas) como ID
+// correlativo: si alguna vez se borra una fila de "Usuarios" (por ejemplo, para limpiar un
+// registro duplicado), la cantidad de filas baja y el PRÓXIMO usuario que se registre puede
+// terminar con el mismo ID que uno que ya existe. Esto pasó de verdad: hoy hay dos personas
+// distintas (Jeremías Raris y Marcos Giaimo) con el mismo ID "U005" en la planilla — no es
+// un error de reconocimiento facial, es este bug. Mirando el ID más alto en vez de contar
+// filas, borrar una fila nunca puede generar un ID repetido.
+function generarIdUsuario_(sheet) {
+  const data = sheet.getDataRange().getValues();
+  let maxId = 0;
+  for (let i = 1; i < data.length; i++) {
+    const num = parseInt(String(data[i][0]).replace(/[^0-9]/g, ''), 10);
+    if (!isNaN(num) && num > maxId) maxId = num;
+  }
+  return 'U' + String(maxId + 1).padStart(3, '0');
+}
+
 // ---- Registro de usuario (una vez por celular) ----
 function registrarUsuario(nombreCompleto, pin, descriptorRostro, consentimiento) {
   if (!/^\d{4}$/.test(String(pin))) {
@@ -286,8 +304,7 @@ function registrarUsuario(nombreCompleto, pin, descriptorRostro, consentimiento)
   }
 
   const sheet = getOrCreateSheet_(SHEET_USUARIOS, USUARIOS_HEADERS);
-  const correlativo = sheet.getLastRow(); // fila 1 = encabezado
-  const id = 'U' + String(correlativo).padStart(3, '0');
+  const id = generarIdUsuario_(sheet);
   const token = Utilities.getUuid();
   const fecha = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
   sheet.appendRow([id, nombreCompleto.trim(), token, hashPin_(pin), JSON.stringify(descriptorRostro), 'Sí (' + fecha + ')', fecha]);
@@ -408,21 +425,32 @@ function marcarFichaje(token, tipo, pin, descriptorRostro, lat, lon, precisionGp
   });
   const hoy = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
 
-  // Traba del lado del servidor: no permite repetir el mismo tipo el mismo día,
-  // aunque el botón del celular se toque varias veces seguidas.
-  const data = sheet.getDataRange().getValues();
-  for (let i = 1; i < data.length; i++) {
-    const filaFecha = normalizarFecha_(data[i][0], tz);
-    if (filaFecha === hoy && String(data[i][2]) === usuario.id && data[i][4] === tipo) {
-      throw new Error('Ya marcaste "' + tipo + '" hoy.');
+  // Traba del lado del servidor: no permite repetir el mismo tipo el mismo día, aunque el
+  // botón del celular se toque varias veces seguidas (o el reintento automático de la cola
+  // sin conexión mande el mismo fichaje dos veces). El chequeo "¿ya existe?" y el guardado
+  // van adentro de un LockService: si dos pedidos llegan casi juntos, el segundo espera a
+  // que el primero termine de escribir antes de mirar la planilla — si no, los dos podían
+  // leer "no existe todavía" al mismo tiempo y guardar un duplicado (pasó de verdad: hay un
+  // "Salida" repetido dos veces en el mismo segundo en la planilla real).
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    const data = sheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      const filaFecha = normalizarFecha_(data[i][0], tz);
+      if (filaFecha === hoy && String(data[i][2]) === usuario.id && data[i][4] === tipo) {
+        throw new Error('Ya marcaste "' + tipo + '" hoy.');
+      }
     }
-  }
 
-  const ahora = new Date();
-  const hora = Utilities.formatDate(ahora, tz, 'HH:mm:ss');
-  sheet.appendRow([hoy, hora, usuario.id, usuario.nombre, tipo, ahora, nombreDeposito, distanciaDeposito, precisionGps ? Math.round(precisionGps) : '']);
-  formatearFilaFichaje_(sheet, sheet.getLastRow(), usuario.id, tipo);
-  return { ok: true, fecha: hoy, hora: hora, tipo: tipo, mensaje: mensajeSaludo_(tipo, usuario.nombre) };
+    const ahora = new Date();
+    const hora = Utilities.formatDate(ahora, tz, 'HH:mm:ss');
+    sheet.appendRow([hoy, hora, usuario.id, usuario.nombre, tipo, ahora, nombreDeposito, distanciaDeposito, precisionGps ? Math.round(precisionGps) : '']);
+    formatearFilaFichaje_(sheet, sheet.getLastRow(), usuario.id, tipo);
+    return { ok: true, fecha: hoy, hora: hora, tipo: tipo, mensaje: mensajeSaludo_(tipo, usuario.nombre) };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ---- Repintar toda la planilla (para prolijizar datos ya cargados) ----
