@@ -174,7 +174,7 @@
         <div class="guia-ovalo"></div>
         <div class="guia-texto">Centrá tu cara en el óvalo</div>
       </div>
-      <button class="btn-primary" onclick="capturarRostroFichaje()">Verificar y marcar</button>
+      <button class="btn-primary" id="btnVerificarMarcar" onclick="capturarRostroFichaje()">Verificar y marcar</button>
       <button class="btn-cancelar" onclick="cancelarRostroFichaje()">Cancelar</button>
       <div class="status" id="statusRostroFichaje"></div>
     </div>
@@ -193,7 +193,7 @@
     // ⚠️ Esta es la URL del Apps Script de Fichero Berazategui (/exec). Si alguna vez se
     // vuelve a publicar una nueva implementación (Nueva implementación, no Nueva versión),
     // hay que actualizarla acá.
-    const API_URL = 'https://script.google.com/macros/s/AKfycbzA_fxSBYbBN8b77Mo4Pn4WzBQgvp2b1LzzNC6L8RbR2ePACkETOd72j6OKDZMfFRfX/exec';
+    const API_URL = 'https://script.google.com/macros/s/AKfycbyVtxHmCihhSrhqj-CsoRXMKxrMx9zw1jNuQ95zfiQaApK1sTBw-8DhEEuWPefsdFWR/exec';
 
     const TOKEN_KEY = 'fichero_token_berazategui';
     const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/weights';
@@ -682,18 +682,35 @@
       document.getElementById('statusPrincipal').textContent = '';
     }
 
+    // Guarda contra doble-toque: el auto-escaneo Y el botón manual llaman a esta misma
+    // función, y nada impedía que se disparara dos veces casi juntas (tocar el botón justo
+    // cuando el auto-escaneo también dispara, o tocar dos veces rápido). Eso generó fichajes
+    // duplicados reales en la planilla (mismo tipo, mismo segundo). El chequeo del servidor
+    // (LockService en marcarFichaje) ya lo previene igual, pero conviene frenarlo acá también
+    // para no gastar una foto/verificación de más.
+    let procesandoFichaje = false;
+
     async function capturarRostroFichaje() {
+      if (procesandoFichaje) return;
+      procesandoFichaje = true;
+      const btn = document.getElementById('btnVerificarMarcar');
+      if (btn) btn.disabled = true;
       detenerAutoEscaneo();
       const statusEl = document.getElementById('statusRostroFichaje');
-      statusEl.textContent = 'Analizando...';
-      const video = document.getElementById('videoFichaje');
-      const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
-      if (!descriptor) {
-        statusEl.textContent = 'No se detectó una cara. Probá de nuevo con mejor luz.';
-        return;
+      try {
+        statusEl.textContent = 'Analizando...';
+        const video = document.getElementById('videoFichaje');
+        const descriptor = await capturarDescriptorPromedio(video, 3, statusEl);
+        if (!descriptor) {
+          statusEl.textContent = 'No se detectó una cara. Probá de nuevo con mejor luz.';
+          return;
+        }
+        detenerCamara();
+        await marcar(tipoPendiente, pinPendiente, descriptor, ubicacionPendiente);
+      } finally {
+        procesandoFichaje = false;
+        if (btn) btn.disabled = false;
       }
-      detenerCamara();
-      marcar(tipoPendiente, pinPendiente, descriptor, ubicacionPendiente);
     }
 
     function marcar(tipo, pin, descriptor, ubicacion) {
@@ -703,7 +720,7 @@
       const precision = ubicacion ? ubicacion.precision : null;
       const params = [token, tipo, pin, descriptor, lat, lon, precision];
       document.getElementById('statusRostroFichaje').textContent = 'Guardando...';
-      llamarApi('marcarFichaje', params)
+      return llamarApi('marcarFichaje', params)
         .then(function (res) {
           mostrarSaludo(res.mensaje);
           tipoPendiente = null;
